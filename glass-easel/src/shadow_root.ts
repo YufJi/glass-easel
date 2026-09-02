@@ -1,4 +1,5 @@
 import { BM, BackendMode, type backend } from './backend'
+import { type ComponentDefinitionWithPlaceholder } from './behavior'
 import {
   Component,
   convertGenerics,
@@ -6,7 +7,7 @@ import {
   type GeneralComponent,
   type GeneralComponentDefinition,
 } from './component'
-import { type ComponentSpaceHooks } from './component_space'
+import { type ComponentWaitingList, type ComponentSpaceHooks } from './component_space'
 import { DeepCopyStrategy, getDeepCopyStrategy } from './data_proxy'
 import { deepCopy, simpleDeepCopy } from './data_utils'
 import { Element, type DoubleLinkedList } from './element'
@@ -14,9 +15,9 @@ import { MutationObserverTarget } from './mutation_observer'
 import { NativeNode } from './native_node'
 import { type Node } from './node'
 import { TextNode } from './text_node'
-import { SHADOW_ROOT_SYMBOL, isElement, isShadowRoot } from './type_symbol'
+import { SHADOW_ROOT_SYMBOL, isComponent, isElement, isShadowRoot } from './type_symbol'
 import { VirtualNode } from './virtual_node'
-import { ThirdError, triggerWarning } from './warning'
+import { ThirdError, dispatchError, triggerWarning } from './warning'
 
 export const enum SlotMode {
   Single = 1,
@@ -79,10 +80,11 @@ export class ShadowRoot extends VirtualNode {
 
     let be: backend.ShadowRootContext | null = null
     if (BM.SHADOW || (BM.DYNAMIC && host.getBackendMode() === BackendMode.Shadow)) {
-      be = (host._$backendElement as backend.Element).getShadowRoot()!
+      if (host._$backendElement) {
+        be = (host._$backendElement as backend.Element).getShadowRoot()!
+      }
     }
 
-    node.is = 'shadow'
     node._$idMap = null
     let slotMode = SlotMode.Single
     const hostComponentOptions = host.getComponentOptions()
@@ -105,7 +107,7 @@ export class ShadowRoot extends VirtualNode {
       node._$updateDynamicSlotValueHandler = undefined
     }
     node._$backendShadowRoot = be
-    node._$initialize(true, be, node, host._$nodeTreeContext)
+    node._$initialize('shadow', true, be, node, host._$nodeTreeContext)
     node._$host = host
     node._$hooks = host.getOwnerSpace().hooks
     host.shadowRoot = node
@@ -121,11 +123,12 @@ export class ShadowRoot extends VirtualNode {
   }
 
   createTextNode(text = ''): TextNode {
-    return this._$hooks.createTextNode((text) => new TextNode(text, this), text)
+    return this._$hooks.createTextNode.call(this, (text) => new TextNode(text, this), text)
   }
 
   createNativeNode(tagName: string): NativeNode {
-    return this._$hooks.createNativeNode(
+    return this._$hooks.createNativeNode.call(
+      this,
       (tagName, stylingName) => NativeNode.create(tagName, this, stylingName),
       tagName,
       tagName,
@@ -139,10 +142,13 @@ export class ShadowRoot extends VirtualNode {
   createNativeNodeWithInit(
     tagName: string,
     stylingName: string,
+    placeholderHandlerRemover: (() => void) | undefined,
     initPropValues?: (comp: NativeNode) => void,
   ): NativeNode {
-    const ret = this._$hooks.createNativeNode(
-      (tagName, stylingName) => NativeNode.create(tagName, this, stylingName),
+    const ret = this._$hooks.createNativeNode.call(
+      this,
+      (tagName, stylingName) =>
+        NativeNode.create(tagName, this, stylingName, placeholderHandlerRemover),
       tagName,
       stylingName,
     )
@@ -155,7 +161,7 @@ export class ShadowRoot extends VirtualNode {
     usingKey?: string,
   ): {
     using: GeneralComponentDefinition | string
-    placeholderHandler: { onReplace(callback: () => void): void; destroy: () => void } | undefined
+    waiting?: ComponentWaitingList
   } {
     const host = this._$host
     const beh = host._$behavior
@@ -173,32 +179,12 @@ export class ShadowRoot extends VirtualNode {
     for (let i = 0; i < possibleComponentDefinitions.length; i += 1) {
       const cwp = possibleComponentDefinitions[i]
       if (cwp === null || cwp === undefined) continue
-      if (typeof cwp === 'string') return { using: cwp, placeholderHandler: undefined }
-      if (cwp.final) return { using: cwp.final, placeholderHandler: undefined }
+      if (typeof cwp === 'string') return { using: cwp, waiting: undefined }
+      if (cwp.final) return { using: cwp.final, waiting: undefined }
       if (cwp.placeholder !== null) {
         const placeholder = resolvePlaceholder(cwp.placeholder, space, cwp.source, hostGenericImpls)
         const waiting = cwp.waiting || undefined
-        if (waiting) {
-          let placeholderCallback: (() => void) | undefined
-          const actualPlaceholderCallback = () => {
-            placeholderCallback?.()
-            placeholderCallback = undefined
-          }
-          waiting.add(actualPlaceholderCallback)
-          waiting.hintUsed(host)
-          return {
-            using: placeholder,
-            placeholderHandler: {
-              onReplace(callback: () => void) {
-                placeholderCallback = callback
-              },
-              destroy() {
-                waiting.remove(actualPlaceholderCallback)
-              },
-            },
-          }
-        }
-        return { using: placeholder, placeholderHandler: undefined }
+        return { using: placeholder, waiting }
       }
     }
 
@@ -215,7 +201,7 @@ export class ShadowRoot extends VirtualNode {
       }
       triggerWarning(`Cannot find component "${compName}", using default component.`, this._$host)
     }
-    return { using: comp, placeholderHandler: undefined }
+    return { using: comp, waiting: undefined }
   }
 
   /**
@@ -228,28 +214,65 @@ export class ShadowRoot extends VirtualNode {
     tagName: string,
     usingKey?: string,
     genericTargets?: { [key: string]: string },
+    placeholderCallback?: ((c: GeneralComponentDefinition) => void) | undefined,
     initPropValues?: (comp: GeneralComponent | NativeNode) => void,
   ): GeneralComponent | NativeNode {
-    const host = this._$host
-    const beh = host._$behavior
-    const { using } = this.resolveComponent(tagName, usingKey)
+    const { using, waiting } = this.resolveComponent(tagName, usingKey)
 
-    const node =
-      typeof using === 'string'
-        ? this.createNativeNodeWithInit(using, tagName, initPropValues)
-        : this._$hooks.createComponent(
-            (tagName, compDef) =>
-              Component._$advancedCreate(
-                tagName,
-                compDef,
-                this,
-                null,
-                convertGenerics(compDef, beh, host, genericTargets),
-                initPropValues,
-              ),
-            tagName,
-            using,
+    let placeholderHandlerRemover: (() => void) | undefined
+
+    if (waiting) {
+      // The resolved component is a placeholder — register a callback so that
+      // when the real component definition arrives, a replacer node is created
+      // and swapped in for the placeholder node in the tree.
+      const replacePlaceholderCallback = (c: GeneralComponentDefinition) => {
+        const replacer = this.createComponentByDef(
+          tagName,
+          c,
+          genericTargets,
+          undefined,
+          initPropValues,
+        )
+        replacer.destroyBackendElementOnRemoval()
+        const replacerShadowRoot = replacer.getShadowRoot()
+        const elemShadowRoot = isComponent(node) ? node.getShadowRoot() : null
+        const isElemDynamicSlots = elemShadowRoot?.getSlotMode() === SlotMode.Dynamic
+        const isReplacerDynamicSlots = replacerShadowRoot?.getSlotMode() === SlotMode.Dynamic
+        if (isReplacerDynamicSlots !== isElemDynamicSlots) {
+          // The `dynamicSlots` option must match between the placeholder and its
+          // real component, otherwise the slot layout would be inconsistent.
+          dispatchError(
+            new Error(
+              `The "dynamicSlots" option of component <${replacer.is}> and its placeholder <${node.is}> should be the same.`,
+            ),
+            '[render]',
+            replacer,
           )
+        } else if (isReplacerDynamicSlots) {
+          // Dynamic-slot components rely on the parent to reassign slot children,
+          // so replace through `parentNode.replaceChild` to trigger the update.
+          node.parentNode?.replaceChild(replacer, node)
+        } else {
+          node.selfReplaceWith(replacer)
+        }
+        placeholderCallback?.(c)
+      }
+      waiting.add(replacePlaceholderCallback)
+      waiting.hintUsed(this._$host)
+      // Store the deregister so that the callback can be removed when the
+      // element is later destroyed (see `Element._$placeholderHandlerRemover`).
+      placeholderHandlerRemover = () => {
+        waiting.remove(replacePlaceholderCallback)
+      }
+    }
+
+    const node = this.createComponentByDef(
+      tagName,
+      using,
+      genericTargets,
+      placeholderHandlerRemover,
+      initPropValues,
+    )
 
     return node
   }
@@ -258,31 +281,41 @@ export class ShadowRoot extends VirtualNode {
     tagName: string,
     componentDef: GeneralComponentDefinition,
     genericTargets?: { [key: string]: string },
+    placeholderHandlerRemover?: (() => void) | undefined,
     initPropValues?: (comp: GeneralComponent | NativeNode) => void,
   ): GeneralComponent
   createComponentByDef(
     tagName: string,
     componentDef: string,
     genericTargets?: { [key: string]: string },
+    placeholderHandlerRemover?: (() => void) | undefined,
     initPropValues?: (comp: GeneralComponent | NativeNode) => void,
   ): NativeNode
   createComponentByDef(
     tagName: string,
     componentDef: GeneralComponentDefinition | string,
     genericTargets?: { [key: string]: string },
+    placeholderHandlerRemover?: (() => void) | undefined,
     initPropValues?: (comp: GeneralComponent | NativeNode) => void,
   ): GeneralComponent | NativeNode
   createComponentByDef(
     tagName: string,
     componentDef: GeneralComponentDefinition | string,
     genericTargets?: { [key: string]: string },
+    placeholderHandlerRemover?: (() => void) | undefined,
     initPropValues?: (comp: GeneralComponent | NativeNode) => void,
   ): GeneralComponent | NativeNode {
     const host = this._$host
     const beh = host._$behavior
     return typeof componentDef === 'string'
-      ? this.createNativeNodeWithInit(componentDef, tagName, initPropValues)
-      : this._$hooks.createComponent(
+      ? this.createNativeNodeWithInit(
+          componentDef,
+          tagName,
+          placeholderHandlerRemover,
+          initPropValues,
+        )
+      : this._$hooks.createComponent.call(
+          this,
           (tagName, compDef) =>
             Component._$advancedCreate(
               tagName,
@@ -290,11 +323,36 @@ export class ShadowRoot extends VirtualNode {
               this,
               null,
               convertGenerics(compDef, beh, host, genericTargets),
+              placeholderHandlerRemover,
               initPropValues,
             ),
           tagName,
           componentDef,
         )
+  }
+
+  /**
+   * Find whether this component is placeholding or not
+   *
+   * This method will only find in the component `using` list and `generics` list.
+   * If not found, returns `undefined` .
+   * If the placeholder will be used, returns `true` ; `false` otherwise.
+   */
+  checkComponentPlaceholder(usingKey: string): boolean | undefined {
+    const beh = this._$host._$behavior
+    let compDef: ComponentDefinitionWithPlaceholder
+    const using = beh._$using[usingKey]
+    if (using !== undefined) {
+      compDef = using
+    } else {
+      const g = this._$host._$genericImpls?.[usingKey]
+      if (g) compDef = g
+      else return undefined
+    }
+    if (typeof compDef === 'string') return false
+    if (compDef.final) return false
+    if (compDef.placeholder !== null) return true
+    return false
   }
 
   getElementById(id: string): Element | undefined {

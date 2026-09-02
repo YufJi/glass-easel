@@ -524,6 +524,7 @@ export class Component<
     owner: ShadowRoot | null,
     backendContext: GeneralBackendContext | null,
     genericImpls: { [name: string]: ComponentDefinitionWithPlaceholder } | null,
+    placeholderHandlerRemover: (() => void) | undefined,
     initPropValues?: (comp: ComponentInstance<TData, TProperty, TMethod>) => void,
   ): ComponentInstance<TData, TProperty, TMethod> {
     if (!def._$detail) {
@@ -565,8 +566,11 @@ export class Component<
       if (BM.DOMLIKE || (BM.DYNAMIC && nodeTreeContext.mode === BackendMode.Domlike)) {
         if (!virtualHost) {
           if (ENV.DEV) performanceMeasureStart('backend.createElement')
+          const tagNamePrefix = options.hostNodeTagName.endsWith('*')
+            ? options.hostNodeTagName.slice(0, -1)
+            : ''
           backendElement = (nodeTreeContext as domlikeBackend.Context).document.createElement(
-            tagName,
+            tagNamePrefix + tagName,
           )
           if (isDedicatedStyleScope) {
             const styleScopePrefix = ownerSpace.styleScopeManager.queryName(styleScope)
@@ -588,36 +592,39 @@ export class Component<
       } else if (BM.SHADOW || (BM.DYNAMIC && nodeTreeContext.mode === BackendMode.Shadow)) {
         if (ENV.DEV) performanceMeasureStart('component.createComponent')
         const sr = owner
-          ? owner._$backendShadowRoot!
+          ? owner._$backendShadowRoot
           : (nodeTreeContext as backend.Context).getRootNode()
-        const be = sr.createComponent(
-          tagName,
-          external,
-          virtualHost,
-          styleScope ?? StyleScopeManager.globalScope(),
-          extraStyleScope,
-          behavior._$externalClasses,
-          // eslint-disable-next-line no-nested-ternary
-          external
-            ? null
-            : // eslint-disable-next-line no-nested-ternary
-            options.dynamicSlots
-            ? SlotMode.Dynamic
-            : options.multipleSlots
-            ? SlotMode.Multiple
-            : SlotMode.Single,
-          options.writeIdToDOM,
-        )
+        const be =
+          sr?.createComponent(
+            tagName,
+            external,
+            virtualHost,
+            styleScope ?? StyleScopeManager.globalScope(),
+            extraStyleScope,
+            behavior._$externalClasses,
+            // eslint-disable-next-line no-nested-ternary
+            external
+              ? null
+              : // eslint-disable-next-line no-nested-ternary
+              options.dynamicSlots
+              ? SlotMode.Dynamic
+              : options.multipleSlots
+              ? SlotMode.Multiple
+              : SlotMode.Single,
+            options.writeIdToDOM,
+          ) ?? null
         backendElement = be
         if (ENV.DEV) performanceMeasureEnd()
       }
     }
     comp._$initialize(
+      def.is,
       virtualHost,
       backendElement,
       owner,
       owner?._$nodeTreeContext ?? nodeTreeContext!,
     )
+    comp._$placeholderHandlerRemover = placeholderHandlerRemover
 
     const ownerHost = owner ? owner.getHostNode() : undefined
 
@@ -963,6 +970,7 @@ export class Component<
         null,
         backendContext,
         collectGenericImpls(componentDefinition as unknown as GeneralComponentDefinition),
+        undefined,
         initPropValues,
       )
     }
@@ -1037,10 +1045,6 @@ export class Component<
       null,
       initPropValues,
     )
-  }
-
-  get is(): string {
-    return this._$definition.is
   }
 
   get properties(): Merge<DataWithPropertyValues<TData, TProperty>> {

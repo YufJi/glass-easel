@@ -87,7 +87,6 @@ if (gitStatusRes.status !== 0 || gitStatusRes.stdout.length > 0) {
 ].forEach((p) => {
   let content = fs.readFileSync(p, { encoding: 'utf8' })
   let oldVersion
-  const refVersions = []
   content = content.replace(/"version": "(.+)"/, (_, v) => {
     oldVersion = v
     return `"version": "${version}"`
@@ -96,9 +95,6 @@ if (gitStatusRes.status !== 0 || gitStatusRes.stdout.length > 0) {
     throw new Error(`version segment not found in ${p}`)
   }
   console.info(`Update ${p} version from "${oldVersion}" to "${version}"`)
-  refVersions.forEach(({ mod, v }) => {
-    console.info(`  + dependency ${mod} version from "${v}" to "${version}"`)
-  })
   writeFileAndGitAdd(p, content)
 })
 
@@ -144,7 +140,7 @@ if (
     stdio: 'inherit',
   }).status !== 0
 ) {
-  throw new Error('failed to execute npm build')
+  throw new Error('failed to execute build')
 }
 
 // cargo test
@@ -175,36 +171,6 @@ if (
   throw new Error('failed to execute git commit')
 }
 
-// cargo publish
-;['glass-easel-template-compiler', 'glass-easel-stylesheet-compiler'].forEach((p) => {
-  console.info(`Publish ${p} to crates.io`)
-  if (childProcess.spawnSync('cargo', ['publish', '-p', p], { stdio: 'inherit' }).status !== 0) {
-    throw new Error('failed to publish Cargo crates')
-  }
-})
-
-// publish js modules
-;[
-  'glass-easel',
-  'glass-easel-miniprogram-adapter',
-  'glass-easel-miniprogram-typescript',
-  'glass-easel-miniprogram-webpack-plugin',
-  'glass-easel-miniprogram-template',
-  'glass-easel-shadow-sync',
-  'glass-easel-template-compiler',
-  'glass-easel-stylesheet-compiler',
-].forEach((p) => {
-  console.info(`Publish ${p} to npmjs`)
-  if (
-    childProcess.spawnSync('pnpm', ['publish', '--registry', 'https://registry.npmjs.org'], {
-      cwd: p,
-      stdio: 'inherit',
-    }).status !== 0
-  ) {
-    throw new Error('failed to publish NPM modules')
-  }
-})
-
 // add a git tag and push
 console.info('Push to git origin')
 if (childProcess.spawnSync('git', ['tag', `v${version}`]).status !== 0) {
@@ -217,4 +183,4 @@ if (childProcess.spawnSync('git', ['push', '--tags'], { stdio: 'inherit' }).stat
   throw new Error('failed to execute git push --tags')
 }
 
-console.info('All done!')
+console.info('Version updated! Wait the remote actions to build and publish.')

@@ -266,10 +266,6 @@ export class ShadowSyncElement implements GlassEaselBackend.Element {
     this.getChannel().removeClass(this._id, className)
   }
 
-  clearClasses(): void {
-    this.getChannel().clearClasses(this._id)
-  }
-
   setClassAlias(className: string, target: string[]): void {
     this.getChannel().setClassAlias(this._id, className, target)
   }
@@ -373,6 +369,26 @@ export class ShadowSyncElement implements GlassEaselBackend.Element {
     }
   }
 
+  createResizeObserver(
+    mode: GlassEaselBackend.ResizeObserverMode,
+    listener: (res: GlassEaselBackend.ResizeStatus) => void,
+  ): GlassEaselBackend.Observer {
+    const id = this.getChannel().createResizeObserver(this._id, mode, listener)
+    return {
+      disconnect: () => {
+        this.getChannel().disconnectObserver(id)
+      },
+    }
+  }
+
+  triggerNativeEvent(type: string, detail: unknown): void {
+    this.getChannel().triggerNativeEvent(this._id, type, detail)
+  }
+
+  manipulateNativeNode(action: string, args: unknown, cb: (res: unknown) => void): void {
+    this.getChannel().manipulateNativeNode(this._id, action, args, cb)
+  }
+
   getContext(cb: (res: any) => void): void {
     this.getChannel().getContext(this._id, cb)
   }
@@ -447,6 +463,8 @@ export class ShadowSyncShadowRoot
 
 export class ShadowSyncBackendContext implements GlassEaselBackend.Context {
   mode: BackendMode.Shadow = 1
+
+  public dropBackendAfterRelease = true
 
   private _elementIdGen: IDGenerator
   private _elementIdMap: (ShadowSyncElement | undefined)[] = []
@@ -688,6 +706,18 @@ export class ShadowSyncBackendContext implements GlassEaselBackend.Context {
         this.channel.disconnectObserver(id)
       },
     }
+  }
+
+  getActiveElement(cb: (node: Element | null) => void): void {
+    this.channel.getActiveElement((elementId) => {
+      cb(elementId ? (this._elementIdMap[elementId]!.__wxElement as Element) : null)
+    })
+  }
+
+  elementFromPoint(left: number, top: number, cb: (node: Element | null) => void): void {
+    this.channel.elementFromPoint(left, top, (elementId) => {
+      cb(elementId ? (this._elementIdMap[elementId]!.__wxElement as Element) : null)
+    })
   }
 
   _genElementId() {

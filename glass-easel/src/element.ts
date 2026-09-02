@@ -108,6 +108,7 @@ export type DoubleLinkedList<T> = {
  */
 export class Element implements NodeCast {
   [ELEMENT_SYMBOL]: true
+  public is: string
   /** @internal */
   _$backendElement: GeneralBackendElement | null
   /** @internal */
@@ -132,6 +133,8 @@ export class Element implements NodeCast {
   _$subtreeSlotEnd: DoubleLinkedList<Element> | null
   /** @internal */
   _$inheritSlots: boolean
+  /** @internal */
+  _$placeholderHandlerRemover: (() => void) | undefined
   /** @internal */
   _$virtual: boolean
   dataset: { [name: string]: unknown }
@@ -169,11 +172,13 @@ export class Element implements NodeCast {
 
   /* @internal */
   protected _$initialize(
+    is: string,
     virtual: boolean,
     backendElement: GeneralBackendElement | null,
     owner: ShadowRoot | null,
     nodeTreeContext: GeneralBackendContext | DestroyedBackendContext,
   ) {
+    this.is = is
     this._$backendElement = backendElement
     this._$destroyOnRemoval = AutoDestroyState.Disabled
     this._$nodeTreeContext = nodeTreeContext
@@ -186,6 +191,7 @@ export class Element implements NodeCast {
     this._$subtreeSlotStart = null
     this._$subtreeSlotEnd = null
     this._$inheritSlots = false
+    this._$placeholderHandlerRemover = undefined
     this._$virtual = virtual
     this.dataset = {}
     this._$marks = null
@@ -238,7 +244,7 @@ export class Element implements NodeCast {
     }
     if (BM.SHADOW || (BM.DYNAMIC && this.getBackendMode() === BackendMode.Shadow)) {
       if (ENV.DEV) performanceMeasureStart('backend.setId')
-      ;(be as backend.Element).setId(newId)
+      ;(be as backend.Element | null)?.setId(newId)
       if (ENV.DEV) performanceMeasureEnd()
     }
     if (globalOptions.writeExtraInfoToAttr) {
@@ -268,7 +274,7 @@ export class Element implements NodeCast {
     }
     this._$nodeSlot = newSlot
     if (BM.SHADOW || (BM.DYNAMIC && this.getBackendMode() === BackendMode.Shadow)) {
-      ;(this._$backendElement as backend.Element).setSlot(newSlot)
+      ;(this._$backendElement as backend.Element | null)?.setSlot(newSlot)
     }
     const slotParentShadowRoot = Element._$getParentHostShadowRoot(this.parentNode)
     if (slotParentShadowRoot) {
@@ -673,6 +679,8 @@ export class Element implements NodeCast {
           elem._$destroyOnRemoval = AutoDestroyState.Destroyed
           elem.destroyBackendElement()
         }
+        const f = elem._$placeholderHandlerRemover
+        if (typeof f === 'function') f()
       }
       rec(node)
     } else if (node._$destroyOnRemoval === AutoDestroyState.Enabled) {
@@ -862,7 +870,7 @@ export class Element implements NodeCast {
       cur = cur.parentNode
     }
     if (isComponent(cur) && cur._$external) {
-      return (cur.shadowRoot as ExternalShadowRoot).slot as composedElement
+      return (cur.shadowRoot as ExternalShadowRoot).slot as composedElement | null
     }
     return cur ? (cur._$backendElement as composedElement) : null
   }
@@ -2228,14 +2236,14 @@ export class Element implements NodeCast {
         // do nothing
       } else if (BM.SHADOW || (BM.DYNAMIC && parent.getBackendMode() === BackendMode.Shadow)) {
         if (!frag) {
-          const backendContext = parent.getBackendContext() as backend.Context
+          const backendContext = parent.getBackendContext() as backend.Context | null
           if (ENV.DEV) performanceMeasureStart('backend.createFragment')
-          frag = backendContext.createFragment()
+          frag = backendContext?.createFragment() ?? null
           if (ENV.DEV) performanceMeasureEnd()
         }
         const be = child._$backendElement as backend.Element
         if (ENV.DEV) performanceMeasureStart('backend.appendChild')
-        frag.appendChild(be)
+        frag?.appendChild(be)
         if (ENV.DEV) performanceMeasureEnd()
       } else {
         Element.insertChildComposed(placeholder, null, child, true, i)
@@ -2485,7 +2493,10 @@ export class Element implements NodeCast {
     }
   }
 
-  getListeners(): Record<string, (EventListenerOptions & { listener: EventListener<unknown> })[]> {
+  getListeners(): Record<
+    string,
+    (Required<EventListenerOptions> & { listener: EventListener<unknown> })[]
+  > {
     return this._$eventTarget.getListeners()
   }
 

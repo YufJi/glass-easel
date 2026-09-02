@@ -4,7 +4,7 @@ import { type Element } from './element'
 import { type ExternalShadowRoot } from './external_shadow_tree'
 import { FuncArrWithMeta } from './func_arr'
 import { ENV } from './global_options'
-import { isComponent, isShadowRoot } from './type_symbol'
+import { isComponent, isElement, isShadowRoot } from './type_symbol'
 
 /**
  * Options for an event
@@ -172,7 +172,7 @@ export class EventTarget<TEvents extends { [type: string]: unknown }> {
   getListeners() {
     const finalListeners = Object.create(null) as Record<
       string,
-      (EventListenerOptions & { listener: EventListener<unknown> })[]
+      (Required<EventListenerOptions> & { listener: EventListener<unknown> })[]
     >
     const resolveListeners = (
       listeners: { [T in keyof TEvents]: EventFuncArr<TEvents[T]> },
@@ -443,7 +443,7 @@ export class Event<TDetail> {
       forEachBubblePath(target, (currentTarget, target, mark) => {
         if (!atTarget && isComponent(currentTarget) && currentTarget._$external) {
           const sr = currentTarget.shadowRoot as ExternalShadowRoot
-          sr.handleEvent(sr.slot, this)
+          if (sr.slot) sr.handleEvent(sr.slot, this)
         }
         atTarget = false
 
@@ -467,10 +467,14 @@ export class Event<TDetail> {
 
   static dispatchExternalEvent<TDetail>(
     element: Element,
-    target: GeneralBackendElement,
+    externalTarget: GeneralBackendElement,
     event: Event<TDetail>,
   ) {
-    return event.dispatch(element, target)
+    let target = element
+    if (isComponent(element) && isElement(element.shadowRoot)) {
+      target = element.shadowRoot
+    }
+    return event.dispatch(target, externalTarget)
   }
 
   static triggerEvent<TDetail>(

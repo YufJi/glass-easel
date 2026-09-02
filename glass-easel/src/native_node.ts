@@ -16,7 +16,6 @@ import { NATIVE_NODE_SYMBOL, isNativeNode } from './type_symbol'
 
 export class NativeNode extends Element {
   [NATIVE_NODE_SYMBOL]: true
-  is: string
   public stylingName: string
   /* @internal */
   private _$modelBindingListeners?: { [name: string]: ModelBindingListener }
@@ -32,9 +31,13 @@ export class NativeNode extends Element {
   static isNativeNode = isNativeNode
 
   /* @internal */
-  static create(tagName: string, owner: ShadowRoot, stylingName?: string): NativeNode {
+  static create(
+    tagName: string,
+    owner: ShadowRoot,
+    stylingName?: string,
+    placeholderHandlerRemover?: () => void,
+  ): NativeNode {
     const node = Object.create(NativeNode.prototype) as NativeNode
-    node.is = tagName
     node.stylingName = stylingName ?? tagName
     const nodeTreeContext = owner.getBackendContext()
     let backendElement: GeneralBackendElement | null = null
@@ -43,14 +46,15 @@ export class NativeNode extends Element {
       if (BM.DOMLIKE || (BM.DYNAMIC && owner.getBackendMode() === BackendMode.Domlike)) {
         backendElement = (nodeTreeContext as domlikeBackend.Context).document.createElement(tagName)
       } else if (BM.SHADOW || (BM.DYNAMIC && owner.getBackendMode() === BackendMode.Shadow)) {
-        backendElement = owner._$backendShadowRoot!.createElement(tagName, node.stylingName)
+        backendElement = owner._$backendShadowRoot?.createElement(tagName, node.stylingName) ?? null
       } else {
         const backend = nodeTreeContext as composedBackend.Context
         backendElement = backend.createElement(tagName, node.stylingName)
       }
       if (ENV.DEV) performanceMeasureEnd()
     }
-    node._$initialize(false, backendElement, owner, owner._$nodeTreeContext)
+    node._$initialize(tagName, false, backendElement, owner, owner._$nodeTreeContext)
+    node._$placeholderHandlerRemover = placeholderHandlerRemover
     const ownerHost = owner.getHostNode()
     const [styleScope, extraStyleScope, styleScopeManager] = ownerHost.getStyleScopes()
     node.classList = new ClassList(
